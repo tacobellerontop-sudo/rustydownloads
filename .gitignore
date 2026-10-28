@@ -3,3 +3,9 @@ yt-dlp.exe
 yt-dlp
 ffmpeg.exe
 ffmpeg
+# Build-time embedding assets (fetched by the release workflow, never
+# committed): build.rs bakes these into the exe if present at build.
+assets/yt-dlp.exe
+assets/yt-dlp
+assets/ffmpeg.exe
+assets/ffmpeg

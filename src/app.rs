@@ -302,7 +302,7 @@ impl eframe::App for RustyDownloadsApp {
                 if self.ffmpeg_found {
                     ui.label("ffmpeg found (mp3 conversion available).");
                 } else {
-                    ui.label("ffmpeg not found: audio-only downloads will be saved as-is (not converted to mp3). Install ffmpeg and put it on PATH to enable mp3 conversion.");
+                    ui.label("ffmpeg not found: audio-only downloads will be saved as-is (not converted to mp3). Install ffmpeg and put it on PATH, or use a release build, which embeds ffmpeg.");
                 }
             });
             if let Some(target) = setup_target {

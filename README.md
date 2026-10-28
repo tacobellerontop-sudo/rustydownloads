@@ -10,7 +10,10 @@ the queue, and the progress bars. **yt-dlp does the actual downloading.**
 
 yt-dlp is a separate, feature-rich command-line audio/video downloader
 written in Python, originally a fork of youtube-dl. It supports thousands
-of sites. It is **not bundled with this app and not reimplemented here**.
+of sites. It is **not reimplemented here** — but in a release build it
+*is* embedded in the exe (see "Release zip" below), so the end user
+needs no separate download. A source build has no embedded copy and
+falls back to the in-app download described in Setup.
 
 When you click Start, rustydownloads:
 
@@ -28,28 +31,40 @@ https://github.com/yt-dlp/yt-dlp for its own documentation and license.
 
 ffmpeg is only used by yt-dlp to convert audio to mp3 (and to merge
 separate video/audio streams for some formats). It is also a separate
-program, not bundled here.
+program — embedded in a release build the same way yt-dlp is, and
+otherwise installed by you (see Setup).
+
+Third-party licences: yt-dlp is Unlicense, ffmpeg (the Gyan essentials
+build used for releases) is GPL-licensed. Both are separate programs
+from this app, which is MIT; their own licences apply to them, and
+ffmpeg's source is available from https://ffmpeg.org.
 
 ## Setup (do this once)
 
-1. **yt-dlp (required, but built in).** You do not need to install
-   yt-dlp by hand. On first run, click **Download yt-dlp** in the app:
-   it downloads the official standalone binary from
-   https://github.com/yt-dlp/yt-dlp/releases (Windows: `yt-dlp.exe`,
-   other systems: `yt-dlp`) in a background thread, verifies it by
-   running `yt-dlp --version`, and then shows "yt-dlp found" — no
-   restart needed. Nothing else downloads until yt-dlp is ready.
-
-   Where it is stored: next to the app's own executable if that
-   folder is writable, otherwise in a per-user app folder —
+1. **yt-dlp (required, but built in).** In a release build you do
+   not need to install yt-dlp at all: it is embedded in the exe and
+   extracted on first run to a per-user app folder —
    `%LOCALAPPDATA%\rustydownloads\bin` on Windows, or
-   `~/.local/share/rustydownloads/bin` elsewhere. The app looks for
-   yt-dlp in this order: a custom path you typed in, next to the
-   app exe, the app-managed folder, then PATH.
+   `~/.local/share/rustydownloads/bin` elsewhere — then verified by
+   running `yt-dlp --version`. Nothing else downloads until yt-dlp
+   is ready.
+
+   In a source build (no embedded copy), click **Download yt-dlp**
+   in the app instead: it downloads the official standalone binary
+   from https://github.com/yt-dlp/yt-dlp/releases (Windows:
+   `yt-dlp.exe`, other systems: `yt-dlp`) in a background thread,
+   verifies it, and then shows "yt-dlp found" — no restart needed.
+   That download goes next to the app exe if that folder is
+   writable, otherwise to the same per-user app folder above.
+
+   The app looks for yt-dlp in this order: a custom path you typed
+   in, next to the app exe, the app-managed folder, the embedded
+   copy (release builds), then PATH.
 
    If yt-dlp is already found in an app-managed folder, the app
    shows **Update yt-dlp** instead, which re-downloads and replaces
-   only that app-managed copy. The app never overwrites a copy found
+   only that app-managed copy — and an update is never overwritten
+   by the older embedded copy. The app never overwrites a copy found
    on PATH or a custom path you typed in.
 
    Manual setup still works if you prefer it: put `yt-dlp.exe` in
@@ -57,19 +72,22 @@ program, not bundled here.
    your PATH, or paste its full path into the "Custom yt-dlp path"
    field in the app and click Detect.
 
-   **yt-dlp is not bundled in this repo and is not reimplemented
-   here.** It is a separate program, released under the Unlicense,
-   and the downloaded binary is gitignored — never commit it. See
-   "Release zip" below for the packaged version, which does include
-   a downloaded yt-dlp.exe alongside the app.
+   **Neither yt-dlp nor ffmpeg is committed to this repo or
+   reimplemented here.** They are separate programs, fetched at
+   build time for releases and gitignored — never commit them. See
+   "Release zip" below.
 
-2. **ffmpeg (optional, recommended for mp3).** Download a Windows build
-   from https://ffmpeg.org/download.html (or install it with a package
-   manager) and put `ffmpeg.exe` on PATH or next to the app.
+2. **ffmpeg (built in for releases, otherwise manual).** In a release
+   build, ffmpeg is embedded in the exe exactly like yt-dlp and
+   extracted on first run to the same app-managed folder, so mp3
+   conversion and video/audio merging work with no setup.
    - With ffmpeg: Audio only downloads as mp3.
-   - Without ffmpeg: the app warns you, and audio-only downloads are
-     saved as-is (for example `.webm` / `.opus`) instead of failing.
-   - ffmpeg is not bundled and is not downloaded by the app.
+   - Without ffmpeg (source build, no ffmpeg installed): the app
+     warns you, and audio-only downloads are saved as-is (for
+     example `.webm` / `.opus`) instead of failing.
+   - For a source build, download a Windows build from
+     https://ffmpeg.org/download.html (or install it with a package
+     manager) and put `ffmpeg.exe` on PATH or next to the app.
 
 3. **Build the app** (see below).
 
@@ -90,17 +108,22 @@ of copying `yt-dlp.exe` by hand.
 
 For end users who do not want to build from source, tagged releases
 are packaged by `.github/workflows/release.yml`: on a `v*` tag (or a
-manual workflow run), the workflow builds the app on Windows, downloads
-`yt-dlp.exe` from the official yt-dlp releases **at build time**, and
-zips `rustydownloads.exe` + `yt-dlp.exe` + `README.md` into a single
-release zip. An end user just unzips it and runs `rustydownloads.exe`
-— yt-dlp is already beside it, so no setup step is needed.
+manual workflow run), the workflow downloads `yt-dlp.exe` from the
+official yt-dlp releases and `ffmpeg.exe` (Gyan essentials build)
+**at build time**, and `build.rs` bakes both into
+`rustydownloads.exe`. The release zip is just
+`rustydownloads.exe` + `README.md`. An end user just unzips it and
+runs `rustydownloads.exe` — on first run it extracts yt-dlp and
+ffmpeg to its managed folder, so there are no sidecar files and no
+setup step at all. The trade-off is size: the exe is roughly
+100 MB (about 22 MB yt-dlp + about 82 MB ffmpeg), compressed in
+the zip.
 
-The repo itself still contains no yt-dlp binary: the binary only
-exists inside the release zip (and, for source builds, in the
-per-user/app folder described in Setup). The in-app
-Download/Update yt-dlp buttons remain as the fallback and update path
-for people who build from source.
+The repo itself still contains no yt-dlp or ffmpeg binary: the
+binaries only exist inside the built exe (and, for source builds,
+in the per-user/app folder described in Setup). The in-app
+Download/Update yt-dlp buttons remain as the fallback and update
+path for people who build from source.
 
 To check the code without building a binary:
 
@@ -118,9 +141,10 @@ cargo test
   `%USERPROFILE%\Downloads\rustydownloads`), with an Open folder button
 - Start / Cancel per job, with a live progress bar, % / speed / ETA
   parsed from yt-dlp's real output — no fake progress
-- yt-dlp detection (custom path, next to the exe, the app-managed
-  folder, or on PATH), with a built-in Download yt-dlp button when
-  it is missing and an Update yt-dlp button for app-managed copies
+- yt-dlp and ffmpeg detection (custom path, next to the exe, the
+  app-managed folder, embedded copy in release builds, or on PATH),
+  with a built-in Download yt-dlp button when it is missing and an
+  Update yt-dlp button for app-managed copies
 
 ## Intentionally left for v2
 
@@ -129,5 +153,6 @@ cargo test
 - Playlists (v1 passes `--no-playlist`)
 - Subtitles, SponsorBlock, and other yt-dlp options
 - Download history saved between runs
-- Auto-updating ffmpeg from inside the app (yt-dlp already has
-  in-app Download/Update; ffmpeg is still manual)
+- Auto-updating ffmpeg from inside the app (release builds embed
+  it, so it updates with each release; source builds still need a
+  manual ffmpeg install)
