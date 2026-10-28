@@ -1,0 +1,14 @@
+[package]
+name = "rustydownloads"
+version = "0.1.0"
+edition = "2021"
+description = "A small Rust GUI wrapper around yt-dlp for downloading videos and audio"
+license = "MIT"
+
+[dependencies]
+eframe = "0.32"
+egui = "0.32"
+
+[profile.release]
+# A smaller, faster binary for a desktop app. Optional, but nice on Windows.
+opt-level = 2
