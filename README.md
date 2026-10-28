@@ -134,7 +134,15 @@ cargo test
 
 ## What v1 does
 
-- URL field, Add to queue, queue list with per-job status
+- Dark dashboard UI: sidebar (Home / Downloads / History / Settings),
+  a "Download anything" hero with URL + Download, Format, Quality,
+  Output Folder, collapsible Advanced Options (extra yt-dlp arguments),
+  Quick Links, and a 1000+ sites banner; a right panel with Active
+  Download, Queue, and History. Queue/history tiles use coloured
+  placeholders — no video thumbnails or titles are fetched, so the
+  URL itself is shown as the title.
+- URL field, queue list with per-job status; Download adds to the
+  queue and starts at once
 - Formats: Best video, 1080p, 720p, Audio only (mp3 with ffmpeg, best
   audio as-is without it)
 - Output folder (default `~/Downloads/rustydownloads`, on Windows

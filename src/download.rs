@@ -43,6 +43,7 @@ impl FormatChoice {
     }
 
     /// All four choices, in the order the UI shows them.
+    #[allow(dead_code)]
     pub fn all() -> [FormatChoice; 4] {
         [
             FormatChoice::BestVideo,
@@ -207,12 +208,27 @@ impl JobHandle {
 ///
 /// Returns a handle the UI polls for progress. The thread owns the
 /// yt-dlp child process; the UI never blocks waiting for it.
+#[allow(dead_code)]
 pub fn start_job(
     yt_dlp_path: &str,
     format: FormatChoice,
     ffmpeg_available: bool,
     url: &str,
     output_dir: &str,
+) -> JobHandle {
+    start_job_with_args(yt_dlp_path, format, ffmpeg_available, url, output_dir, &[])
+}
+
+/// Like `start_job`, plus extra yt-dlp arguments typed by the user
+/// in Advanced Options (e.g. `--cookies`, `--proxy`). Extra args are
+/// inserted before the URL, so they are never mistaken for it.
+pub fn start_job_with_args(
+    yt_dlp_path: &str,
+    format: FormatChoice,
+    ffmpeg_available: bool,
+    url: &str,
+    output_dir: &str,
+    extra_args: &[String],
 ) -> JobHandle {
     let (sender, receiver) = channel::<JobUpdate>();
     let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -225,8 +241,19 @@ pub fn start_job(
     let cancel_for_thread = Arc::clone(&cancel_flag);
     let child_for_thread = Arc::clone(&child);
 
+    let extra_args: Vec<String> = extra_args.to_vec();
     thread::spawn(move || {
-        let args = build_yt_dlp_args(format, ffmpeg_available, &url, &output_dir);
+        let mut args = build_yt_dlp_args(format, ffmpeg_available, &url, &output_dir);
+        // The URL is the last argument build_yt_dlp_args appends;
+        // extra args go just before it.
+        if !extra_args.is_empty() {
+            if let Some(url_arg) = args.pop() {
+                args.extend(extra_args.iter().cloned());
+                args.push(url_arg);
+            } else {
+                args.extend(extra_args.iter().cloned());
+            }
+        }
 
         let spawned = Command::new(&yt_dlp_path)
             .args(&args)
