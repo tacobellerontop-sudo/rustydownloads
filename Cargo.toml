@@ -1,6 +1,6 @@
 [package]
 name = "rustydownloads"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "A small Rust GUI wrapper around yt-dlp for downloading videos and audio"
 license = "MIT"
