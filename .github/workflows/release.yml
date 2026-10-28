@@ -1,17 +1,23 @@
 # Windows release packaging for rustydownloads.
 #
 # What this does, on a v* tag push or a manual run:
-#   1. Builds the app with `cargo build --release` on windows-latest.
-#   2. Downloads yt-dlp.exe at BUILD time from the official yt-dlp
-#      releases page (never committed to this repo).
-#   3. Zips rustydownloads.exe + yt-dlp.exe + README.md into one
-#      release zip and uploads it to the GitHub release.
+#   1. Downloads yt-dlp.exe and ffmpeg.exe at BUILD time (never
+#      committed to this repo) into assets/, where build.rs bakes
+#      them into rustydownloads.exe with include_bytes!.
+#   2. Builds the app with `cargo build --release` on windows-latest.
+#   3. Zips rustydownloads.exe + README.md into one release zip
+#      and uploads it to the GitHub release.
 #
 # The end user just unzips that file and runs rustydownloads.exe:
-# yt-dlp is already beside it, so no setup step is needed. ffmpeg
-# is deliberately NOT included here; it stays optional/manual, as
-# before. People who build from source still get yt-dlp through the
-# in-app Download/Update yt-dlp buttons instead.
+# on first run it extracts yt-dlp and ffmpeg to its own managed
+# folder (%LOCALAPPDATA%\rustydownloads\bin), so there are no
+# sidecar files and no setup step. People who build from source
+# (no assets/ at build time) still get yt-dlp through the in-app
+# Download/Update yt-dlp buttons, and ffmpeg from their own install.
+#
+# Licensing note: yt-dlp is Unlicense; ffmpeg (Gyan essentials
+# build) is GPL-licensed. Neither license is the app's MIT license
+# -- see README.md "How yt-dlp and ffmpeg are used".
 
 name: Release
 
@@ -39,19 +45,25 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Download yt-dlp.exe and ffmpeg.exe (build time only, not committed)
+        run: |
+          New-Item -ItemType Directory -Force -Path assets | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "assets\yt-dlp.exe"
+          .\assets\yt-dlp.exe --version
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-unzip -Force
+          Copy-Item (Get-ChildItem -Recurse -Filter ffmpeg.exe ffmpeg-unzip | Select-Object -First 1).FullName "assets\ffmpeg.exe"
+          .\assets\ffmpeg.exe -version
+          Remove-Item ffmpeg.zip -Force
+          Remove-Item ffmpeg-unzip -Recurse -Force
+
       - name: Build (release)
         run: cargo build --release
-
-      - name: Download yt-dlp.exe (build time only, not committed)
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "yt-dlp.exe"
-          .\yt-dlp.exe --version
 
       - name: Package release zip
         run: |
           New-Item -ItemType Directory -Force -Path package | Out-Null
           Copy-Item target\release\rustydownloads.exe package\
-          Copy-Item yt-dlp.exe package\
           Copy-Item README.md package\
           Compress-Archive -Path package\* -DestinationPath rustydownloads-windows.zip
 
