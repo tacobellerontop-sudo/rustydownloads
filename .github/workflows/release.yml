@@ -1,0 +1,62 @@
+# Windows release packaging for rustydownloads.
+#
+# What this does, on a v* tag push or a manual run:
+#   1. Builds the app with `cargo build --release` on windows-latest.
+#   2. Downloads yt-dlp.exe at BUILD time from the official yt-dlp
+#      releases page (never committed to this repo).
+#   3. Zips rustydownloads.exe + yt-dlp.exe + README.md into one
+#      release zip and uploads it to the GitHub release.
+#
+# The end user just unzips that file and runs rustydownloads.exe:
+# yt-dlp is already beside it, so no setup step is needed. ffmpeg
+# is deliberately NOT included here; it stays optional/manual, as
+# before. People who build from source still get yt-dlp through the
+# in-app Download/Update yt-dlp buttons instead.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or update (e.g. v0.1.0). Leave empty on a tag push; on a manual run it defaults to the current ref name."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Download yt-dlp.exe (build time only, not committed)
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" -OutFile "yt-dlp.exe"
+          .\yt-dlp.exe --version
+
+      - name: Package release zip
+        run: |
+          New-Item -ItemType Directory -Force -Path package | Out-Null
+          Copy-Item target\release\rustydownloads.exe package\
+          Copy-Item yt-dlp.exe package\
+          Copy-Item README.md package\
+          Compress-Archive -Path package\* -DestinationPath rustydownloads-windows.zip
+
+      - name: Upload release zip
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: rustydownloads-windows.zip
