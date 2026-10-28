@@ -8,6 +8,19 @@ license = "MIT"
 [dependencies]
 eframe = "0.32"
 egui = "0.32"
+# Minimal HTTP client for the built-in yt-dlp download (setup only).
+# No async runtime: ureq is a plain blocking client, which suits a
+# background thread that reports progress back to the UI.
+#
+# TLS backend is split by target on purpose: on Windows the OS TLS
+# (schannel) is used, so building for Windows needs no extra C crypto
+# library; elsewhere rustls is used. The ureq API is identical either
+# way, so src/download.rs does not care which backend is active.
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [profile.release]
 # A smaller, faster binary for a desktop app. Optional, but nice on Windows.

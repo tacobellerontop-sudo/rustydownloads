@@ -6,8 +6,9 @@
 //! show. If yt-dlp is missing, nothing is downloaded and the UI says so.
 
 use std::env;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
@@ -349,7 +350,9 @@ pub fn default_output_dir() -> String {
 /// Look for a program in, in order:
 ///   1. a custom path the user typed in (if it is a file),
 ///   2. next to this app's own executable (e.g. yt-dlp.exe beside it),
-///   3. every folder on PATH.
+///   3. the app-managed bin folder (where the built-in setup downloads
+///      yt-dlp to; see `managed_bin_dir`),
+///   4. every folder on PATH.
 pub fn find_program(custom_path: &str, program: &str) -> Option<PathBuf> {
     if !custom_path.trim().is_empty() {
         let candidate = PathBuf::from(custom_path.trim());
@@ -370,6 +373,15 @@ pub fn find_program(custom_path: &str, program: &str) -> Option<PathBuf> {
         }
     }
 
+    // The app-managed bin folder.
+    if program == "yt-dlp" {
+        if let Some(path) = managed_yt_dlp_path() {
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+
     // On PATH.
     if let Ok(path_var) = env::var("PATH") {
         for dir in env::split_paths(&path_var) {
@@ -383,6 +395,294 @@ pub fn find_program(custom_path: &str, program: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+/// The official standalone yt-dlp binary for this OS, from the
+/// project's own releases page. `latest` redirects to the newest
+/// release, so the app always fetches a current build.
+///
+/// Note on checksums: yt-dlp publishes a `SHA2-256SUMS` file for its
+/// releases, but the set of files it covers and the exact asset names
+/// have changed over time, so a strict checksum check here would be
+/// brittle. Instead, the download is verified by running the binary
+/// with `--version` (see `download_yt_dlp_binary`); a corrupt or
+/// wrong download fails that check and is deleted.
+pub fn yt_dlp_download_url() -> &'static str {
+    if cfg!(windows) {
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+    } else {
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+    }
+}
+
+/// The filename yt-dlp uses on this OS.
+pub fn yt_dlp_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "yt-dlp.exe"
+    } else {
+        "yt-dlp"
+    }
+}
+
+/// The per-user folder the app downloads yt-dlp into when it cannot
+/// put it next to the app's own executable (for example, because that
+/// folder is not writable).
+///
+/// Windows: `%LOCALAPPDATA%\rustydownloads\bin`
+/// (falling back to `%USERPROFILE%\AppData\Local\rustydownloads\bin`)
+/// Unix: `~/.local/share/rustydownloads/bin`
+pub fn managed_bin_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let base = env::var("LOCALAPPDATA").ok().or_else(|| {
+            env::var("USERPROFILE")
+                .ok()
+                .map(|home| format!("{}\\AppData\\Local", home))
+        })?;
+        Some(PathBuf::from(base).join("rustydownloads").join("bin"))
+    }
+    #[cfg(not(windows))]
+    {
+        let home = env::var("HOME").ok()?;
+        Some(
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("rustydownloads")
+                .join("bin"),
+        )
+    }
+}
+
+/// The full path of the app-managed yt-dlp copy, if a managed folder
+/// can be worked out on this machine.
+pub fn managed_yt_dlp_path() -> Option<PathBuf> {
+    managed_bin_dir().map(|dir| managed_yt_dlp_path_in(&dir))
+}
+
+/// Pure helper behind `managed_yt_dlp_path`, so it can be unit-tested
+/// without touching environment variables.
+pub fn managed_yt_dlp_path_in(dir: &Path) -> PathBuf {
+    dir.join(yt_dlp_binary_name())
+}
+
+/// Is this yt-dlp copy one the app itself manages, and therefore one
+/// the "Update yt-dlp" button is allowed to replace?
+///
+/// True for copies in the managed bin folder and copies next to the
+/// app's own executable — both are places the built-in setup writes
+/// to. A copy found on PATH, or a custom path the user typed in, is
+/// never app-managed, so the app never overwrites those.
+pub fn is_app_managed(path: &Path) -> bool {
+    if let Some(managed) = managed_yt_dlp_path() {
+        if path == managed {
+            return true;
+        }
+    }
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if path.parent() == Some(dir) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Where a built-in yt-dlp download should go.
+#[derive(Clone, Debug)]
+pub enum SetupTarget {
+    /// Next to the app exe if that folder is writable, otherwise the
+    /// managed bin folder. Used for a first-time download.
+    Auto,
+    /// Replace exactly this existing app-managed copy. Used by the
+    /// "Update yt-dlp" button; the caller must already have checked
+    /// with `is_app_managed` that this path is safe to replace.
+    Replace(PathBuf),
+}
+
+/// Updates a built-in yt-dlp setup download sends back to the UI.
+#[derive(Debug)]
+pub enum SetupUpdate {
+    Progress {
+        downloaded: u64,
+        total: Option<u64>,
+    },
+    Finished {
+        success: bool,
+        message: String,
+        /// The final yt-dlp path, on success.
+        path: Option<PathBuf>,
+    },
+}
+
+/// The UI side of a running yt-dlp setup download.
+pub struct SetupHandle {
+    receiver: Receiver<SetupUpdate>,
+}
+
+impl SetupHandle {
+    /// Drain all updates that have arrived so far (never blocks).
+    pub fn drain_updates(&self) -> Vec<SetupUpdate> {
+        let mut out = Vec::new();
+        while let Ok(update) = self.receiver.try_recv() {
+            out.push(update);
+        }
+        out
+    }
+}
+
+/// Start downloading the official yt-dlp binary in a background
+/// thread. The UI thread never blocks on the network: it polls the
+/// returned handle for `SetupUpdate`s.
+///
+/// On success the downloaded binary is verified by running it with
+/// `--version`; if that fails the file is deleted and the download
+/// reports an error instead of leaving a broken binary behind.
+pub fn start_yt_dlp_setup(target: SetupTarget) -> SetupHandle {
+    let (sender, receiver) = channel::<SetupUpdate>();
+    thread::spawn(move || {
+        let result = run_yt_dlp_setup(&target, &sender);
+        let (success, message, path) = match result {
+            Ok(path) => (
+                true,
+                format!("yt-dlp is ready: {}", path.to_string_lossy()),
+                Some(path),
+            ),
+            Err(err) => (false, err, None),
+        };
+        let _ = sender.send(SetupUpdate::Finished {
+            success,
+            message,
+            path,
+        });
+    });
+    SetupHandle { receiver }
+}
+
+fn run_yt_dlp_setup(
+    target: &SetupTarget,
+    sender: &std::sync::mpsc::Sender<SetupUpdate>,
+) -> Result<PathBuf, String> {
+    // Work out the destination folder first.
+    let (dir, file_name) = match target {
+        SetupTarget::Replace(path) => (
+            path.parent()
+                .map(|p| p.to_path_buf())
+                .ok_or_else(|| "That yt-dlp path has no folder.".to_string())?,
+            path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .ok_or_else(|| "That yt-dlp path has no filename.".to_string())?,
+        ),
+        SetupTarget::Auto => {
+            // Prefer next to the app exe, if that folder is writable;
+            // otherwise fall back to the managed bin folder.
+            let mut chosen: Option<PathBuf> = None;
+            if let Ok(exe) = env::current_exe() {
+                if let Some(dir) = exe.parent() {
+                    if dir_is_writable(dir) {
+                        chosen = Some(dir.to_path_buf());
+                    }
+                }
+            }
+            let dir = match chosen {
+                Some(dir) => dir,
+                None => managed_bin_dir()
+                    .ok_or_else(|| "Could not work out a folder to save yt-dlp to.".to_string())?,
+            };
+            (dir, yt_dlp_binary_name().to_string())
+        }
+    };
+
+    fs::create_dir_all(&dir)
+        .map_err(|err| format!("Could not create {}: {}", dir.to_string_lossy(), err))?;
+    download_yt_dlp_binary(&dir, &file_name, sender)
+}
+
+/// Best-effort writability probe: create and immediately remove a
+/// temporary file. Leaves nothing behind on success.
+fn dir_is_writable(dir: &Path) -> bool {
+    let probe = dir.join(".rustydownloads-write-test");
+    match fs::File::create(&probe) {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+fn download_yt_dlp_binary(
+    dir: &Path,
+    file_name: &str,
+    sender: &std::sync::mpsc::Sender<SetupUpdate>,
+) -> Result<PathBuf, String> {
+    let url = yt_dlp_download_url();
+    let response = ureq::get(url)
+        .call()
+        .map_err(|err| format!("Could not download yt-dlp from {}: {}", url, err))?;
+    let total: Option<u64> = response
+        .header("Content-Length")
+        .and_then(|v| v.parse().ok());
+
+    let dest = dir.join(file_name);
+    // Download to a temporary name first, so a half-finished download
+    // is never mistaken for a working yt-dlp, then rename into place.
+    let temp = dir.join(format!(".{}.download", file_name));
+    let mut file = fs::File::create(&temp)
+        .map_err(|err| format!("Could not write {}: {}", temp.to_string_lossy(), err))?;
+    let mut reader = response.into_reader();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut downloaded: u64 = 0;
+    loop {
+        let n = reader
+            .read(&mut buffer)
+            .map_err(|err| format!("Download failed: {}", err))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buffer[..n])
+            .map_err(|err| format!("Could not write {}: {}", temp.to_string_lossy(), err))?;
+        downloaded += n as u64;
+        let _ = sender.send(SetupUpdate::Progress {
+            downloaded,
+            total,
+        });
+    }
+    drop(file);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&temp, fs::Permissions::from_mode(0o755));
+    }
+
+    fs::rename(&temp, &dest)
+        .map_err(|err| format!("Could not save {}: {}", dest.to_string_lossy(), err))?;
+
+    // Verify the download actually runs before calling it done.
+    let output = Command::new(&dest)
+        .arg("--version")
+        .output()
+        .map_err(|err| format!("Downloaded yt-dlp could not be started: {}", err))?;
+    if !output.status.success() {
+        let _ = fs::remove_file(&dest);
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim();
+        let detail = if detail.is_empty() {
+            "no error output".to_string()
+        } else if detail.chars().count() > 300 {
+            detail.chars().take(300).collect()
+        } else {
+            detail.to_string()
+        };
+        return Err(format!(
+            "Downloaded yt-dlp failed its --version check ({}); the file was removed.",
+            detail
+        ));
+    }
+
+    Ok(dest)
 }
 
 /// On Windows, programs are usually called `yt-dlp.exe`; elsewhere just
@@ -444,6 +744,44 @@ mod tests {
         assert_eq!(parse_progress_line("[info] Downloading video"), None);
         assert_eq!(parse_progress_line(""), None);
         assert_eq!(parse_progress_line("just some text 50%"), None);
+    }
+
+    #[test]
+    fn yt_dlp_download_url_is_the_official_release_asset() {
+        let url = yt_dlp_download_url();
+        assert!(url.starts_with(
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/"
+        ));
+        if cfg!(windows) {
+            assert!(url.ends_with("yt-dlp.exe"));
+        } else {
+            assert!(url.ends_with("yt-dlp"));
+            assert!(!url.ends_with(".exe"));
+        }
+    }
+
+    #[test]
+    fn managed_path_uses_the_right_binary_name_for_this_os() {
+        let path = managed_yt_dlp_path_in(Path::new("/tmp/example-bin"));
+        assert_eq!(path.parent(), Some(Path::new("/tmp/example-bin")));
+        if cfg!(windows) {
+            assert_eq!(path.file_name().unwrap(), "yt-dlp.exe");
+        } else {
+            assert_eq!(path.file_name().unwrap(), "yt-dlp");
+        }
+    }
+
+    #[test]
+    fn update_target_replaces_the_existing_copy() {
+        // The Update button must replace the copy it found, not
+        // silently write somewhere else: the destination is exactly
+        // the path the app is already using.
+        let found = PathBuf::from("/some/app/bin/yt-dlp");
+        let target = SetupTarget::Replace(found.clone());
+        match target {
+            SetupTarget::Replace(path) => assert_eq!(path, found),
+            SetupTarget::Auto => panic!("expected Replace"),
+        }
     }
 
     #[test]

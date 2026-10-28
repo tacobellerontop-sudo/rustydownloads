@@ -5,8 +5,9 @@
 //! and each frame it drains the progress updates that come back.
 
 use crate::download::{
-    default_output_dir, find_program, open_folder, start_job, FormatChoice, JobHandle,
-    JobUpdate,
+    default_output_dir, find_program, is_app_managed, open_folder, start_job,
+    start_yt_dlp_setup, FormatChoice, JobHandle, JobUpdate, SetupHandle, SetupTarget,
+    SetupUpdate,
 };
 use std::fs;
 
@@ -57,6 +58,12 @@ pub struct RustyDownloadsApp {
     ffmpeg_found: bool,
     error_message: String,
     jobs: Vec<QueueJob>,
+    /// Present only while a built-in yt-dlp download/update is running.
+    setup_handle: Option<SetupHandle>,
+    /// Status line for the setup area: downloading progress, a done
+    /// message, or an error. Empty when there is nothing to say.
+    setup_message: String,
+    setup_failed: bool,
 }
 
 impl Default for RustyDownloadsApp {
@@ -70,6 +77,9 @@ impl Default for RustyDownloadsApp {
             ffmpeg_found: false,
             error_message: String::new(),
             jobs: Vec::new(),
+            setup_handle: None,
+            setup_message: String::new(),
+            setup_failed: false,
         };
         app.refresh_detection();
         app
@@ -115,6 +125,63 @@ impl RustyDownloadsApp {
         }
     }
 
+    /// Pull any built-in yt-dlp setup updates out of the running
+    /// download. Called at the top of every frame, like `poll_jobs`.
+    fn poll_setup(&mut self) {
+        let Some(handle) = &self.setup_handle else {
+            return;
+        };
+        for update in handle.drain_updates() {
+            match update {
+                SetupUpdate::Progress { downloaded, total } => {
+                    let downloaded_mib = downloaded as f64 / 1_048_576.0;
+                    self.setup_message = match total {
+                        Some(total) => {
+                            let total_mib = total as f64 / 1_048_576.0;
+                            format!(
+                                "Downloading yt-dlp… {:.1} MiB of {:.1} MiB",
+                                downloaded_mib, total_mib
+                            )
+                        }
+                        None => {
+                            format!("Downloading yt-dlp… {:.1} MiB", downloaded_mib)
+                        }
+                    };
+                    self.setup_failed = false;
+                }
+                SetupUpdate::Finished {
+                    success,
+                    message,
+                    path,
+                } => {
+                    self.setup_handle = None;
+                    // Prefer the verified path the download reported
+                    // over the message text, so the field is actually
+                    // used and the UI shows exactly where yt-dlp is.
+                    self.setup_message = match (success, path) {
+                        (true, Some(path)) => {
+                            format!("yt-dlp is ready: {}", path.to_string_lossy())
+                        }
+                        _ => message,
+                    };
+                    self.setup_failed = !success;
+                    if success {
+                        // The status should flip to Found without the
+                        // user having to restart the app or re-detect.
+                        self.refresh_detection();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Start a built-in yt-dlp download (or update) in the background.
+    fn start_setup(&mut self, target: SetupTarget) {
+        self.setup_handle = Some(start_yt_dlp_setup(target));
+        self.setup_message = "Downloading yt-dlp…".to_string();
+        self.setup_failed = false;
+    }
+
     fn add_job(&mut self) {
         self.error_message.clear();
         let url = self.url_input.trim().to_string();
@@ -142,7 +209,7 @@ impl RustyDownloadsApp {
         self.error_message.clear();
         let Some(yt_dlp) = &self.yt_dlp_path else {
             self.error_message =
-                "yt-dlp was not found. Follow the setup steps above, then click Detect again."
+                "yt-dlp was not found. Use Download yt-dlp above, then try again."
                     .to_string();
             return;
         };
@@ -175,10 +242,11 @@ impl RustyDownloadsApp {
 impl eframe::App for RustyDownloadsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_jobs();
+        self.poll_setup();
 
         // Keep repainting while anything is running, so the progress
         // bars move even when the user is not touching the mouse.
-        if self.jobs.iter().any(|j| j.status.is_running()) {
+        if self.jobs.iter().any(|j| j.status.is_running()) || self.setup_handle.is_some() {
             ctx.request_repaint();
         }
 
@@ -188,15 +256,40 @@ impl eframe::App for RustyDownloadsApp {
             ui.add_space(8.0);
 
             // ---- yt-dlp / ffmpeg status --------------------------------
+            // Button clicks are collected first and acted on after the
+            // group is drawn, to avoid borrowing `self` twice.
+            let mut setup_target: Option<SetupTarget> = None;
             ui.group(|ui| {
                 ui.label("Setup");
                 match &self.yt_dlp_path {
                     Some(path) => {
                         ui.label(format!("yt-dlp found: {}", path));
+                        // Only an app-managed copy may be replaced by
+                        // the Update button. A copy on PATH, or a
+                        // custom path the user typed in, is never
+                        // overwritten by this app.
+                        let managed = std::path::Path::new(path).to_path_buf();
+                        if is_app_managed(&managed) && self.setup_handle.is_none() {
+                            if ui.button("Update yt-dlp").clicked() {
+                                setup_target = Some(SetupTarget::Replace(managed));
+                            }
+                        }
                     }
                     None => {
                         ui.label("yt-dlp not found.");
-                        ui.label("Download yt-dlp.exe from https://github.com/yt-dlp/yt-dlp/releases and either put it next to this app, put it on PATH, or paste its path below.");
+                        if self.setup_handle.is_none() {
+                            ui.label("Click Download yt-dlp and the app will fetch the official standalone binary from the yt-dlp releases page — nothing else to install by hand.");
+                            if ui.button("Download yt-dlp").clicked() {
+                                setup_target = Some(SetupTarget::Auto);
+                            }
+                        }
+                    }
+                }
+                if !self.setup_message.is_empty() {
+                    if self.setup_failed {
+                        ui.colored_label(egui::Color32::RED, &self.setup_message);
+                    } else {
+                        ui.label(&self.setup_message);
                     }
                 }
                 ui.horizontal(|ui| {
@@ -212,6 +305,9 @@ impl eframe::App for RustyDownloadsApp {
                     ui.label("ffmpeg not found: audio-only downloads will be saved as-is (not converted to mp3). Install ffmpeg and put it on PATH to enable mp3 conversion.");
                 }
             });
+            if let Some(target) = setup_target {
+                self.start_setup(target);
+            }
             ui.add_space(8.0);
 
             // ---- New download ------------------------------------------

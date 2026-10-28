@@ -32,15 +32,36 @@ program, not bundled here.
 
 ## Setup (do this once)
 
-1. **yt-dlp (required).** Download the Windows build `yt-dlp.exe` from
-   https://github.com/yt-dlp/yt-dlp/releases and do one of:
-   - put `yt-dlp.exe` in the same folder as `rustydownloads.exe`, or
-   - put it somewhere on your PATH, or
-   - paste its full path into the "Custom yt-dlp path" field in the app
-     and click Detect.
+1. **yt-dlp (required, but built in).** You do not need to install
+   yt-dlp by hand. On first run, click **Download yt-dlp** in the app:
+   it downloads the official standalone binary from
+   https://github.com/yt-dlp/yt-dlp/releases (Windows: `yt-dlp.exe`,
+   other systems: `yt-dlp`) in a background thread, verifies it by
+   running `yt-dlp --version`, and then shows "yt-dlp found" — no
+   restart needed. Nothing else downloads until yt-dlp is ready.
 
-   The app shows "yt-dlp found" with the path it will use, or clear
-   instructions if it cannot find it. Nothing downloads until it is found.
+   Where it is stored: next to the app's own executable if that
+   folder is writable, otherwise in a per-user app folder —
+   `%LOCALAPPDATA%\rustydownloads\bin` on Windows, or
+   `~/.local/share/rustydownloads/bin` elsewhere. The app looks for
+   yt-dlp in this order: a custom path you typed in, next to the
+   app exe, the app-managed folder, then PATH.
+
+   If yt-dlp is already found in an app-managed folder, the app
+   shows **Update yt-dlp** instead, which re-downloads and replaces
+   only that app-managed copy. The app never overwrites a copy found
+   on PATH or a custom path you typed in.
+
+   Manual setup still works if you prefer it: put `yt-dlp.exe` in
+   the same folder as `rustydownloads.exe`, put it somewhere on
+   your PATH, or paste its full path into the "Custom yt-dlp path"
+   field in the app and click Detect.
+
+   **yt-dlp is not bundled in this repo and is not reimplemented
+   here.** It is a separate program, released under the Unlicense,
+   and the downloaded binary is gitignored — never commit it. See
+   "Release zip" below for the packaged version, which does include
+   a downloaded yt-dlp.exe alongside the app.
 
 2. **ffmpeg (optional, recommended for mp3).** Download a Windows build
    from https://ffmpeg.org/download.html (or install it with a package
@@ -48,6 +69,7 @@ program, not bundled here.
    - With ffmpeg: Audio only downloads as mp3.
    - Without ffmpeg: the app warns you, and audio-only downloads are
      saved as-is (for example `.webm` / `.opus`) instead of failing.
+   - ffmpeg is not bundled and is not downloaded by the app.
 
 3. **Build the app** (see below).
 
@@ -60,8 +82,25 @@ cargo run --release
 ```
 
 That builds `rustydownloads` and opens the window. On Windows, the
-release binary is at `target\release\rustydownloads.exe` — copy
-`yt-dlp.exe` next to it (see Setup) and run it from there.
+release binary is at `target\release\rustydownloads.exe` — run it,
+then use the in-app **Download yt-dlp** button (see Setup) instead
+of copying `yt-dlp.exe` by hand.
+
+## Release zip (packaged version)
+
+For end users who do not want to build from source, tagged releases
+are packaged by `.github/workflows/release.yml`: on a `v*` tag (or a
+manual workflow run), the workflow builds the app on Windows, downloads
+`yt-dlp.exe` from the official yt-dlp releases **at build time**, and
+zips `rustydownloads.exe` + `yt-dlp.exe` + `README.md` into a single
+release zip. An end user just unzips it and runs `rustydownloads.exe`
+— yt-dlp is already beside it, so no setup step is needed.
+
+The repo itself still contains no yt-dlp binary: the binary only
+exists inside the release zip (and, for source builds, in the
+per-user/app folder described in Setup). The in-app
+Download/Update yt-dlp buttons remain as the fallback and update path
+for people who build from source.
 
 To check the code without building a binary:
 
@@ -79,8 +118,9 @@ cargo test
   `%USERPROFILE%\Downloads\rustydownloads`), with an Open folder button
 - Start / Cancel per job, with a live progress bar, % / speed / ETA
   parsed from yt-dlp's real output — no fake progress
-- yt-dlp detection (next to the exe, on PATH, or a custom path), with a
-  clear missing message and setup instructions
+- yt-dlp detection (custom path, next to the exe, the app-managed
+  folder, or on PATH), with a built-in Download yt-dlp button when
+  it is missing and an Update yt-dlp button for app-managed copies
 
 ## Intentionally left for v2
 
@@ -89,4 +129,5 @@ cargo test
 - Playlists (v1 passes `--no-playlist`)
 - Subtitles, SponsorBlock, and other yt-dlp options
 - Download history saved between runs
-- Auto-updating yt-dlp / ffmpeg from inside the app
+- Auto-updating ffmpeg from inside the app (yt-dlp already has
+  in-app Download/Update; ffmpeg is still manual)
